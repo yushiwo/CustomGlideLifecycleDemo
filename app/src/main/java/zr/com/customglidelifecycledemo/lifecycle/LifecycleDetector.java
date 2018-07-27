@@ -33,8 +33,6 @@ public class LifecycleDetector {
         LifecycleManagerFragment current = getRequestManagerFragment(fm);
 
         current.getLifecycle().addListener(lifecycleListener);
-
-//        lifecycleListener.setLifecycle(current.getLifecycle());
     }
 
 

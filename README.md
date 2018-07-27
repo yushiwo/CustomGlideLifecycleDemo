@@ -4,7 +4,7 @@
 
 因为对Glide绑定生命周期的原理很感兴趣，所以看了一些源码解析的文章，也读了Glide的相关源码。发现大多数对于Glide生命周期绑定原理的介绍，是直接通过源码一步步的介绍。个人感觉这样没有重点，容易迷失在代码流程细节中。
 
-所以这篇文章通过另外一种方式介绍Glide生命周期管理的原理，通过提问解答的方式，带着问题阅读，更加具有针对性。介绍完了原理之后，我们通过基于Glide生命周期感知的原理，实现了一个测试demo，进一步加深巩固之前所学知识点。所以，介绍主要分为两个部分：
+所以这篇文章通过另外一种方式介绍Glide生命周期管理的原理，即通过提问解答的方式，带着问题阅读，更加具有针对性。介绍完了原理之后，我们通过基于Glide生命周期感知的原理，实现了一个仿Glide生命周期管理框架的demo，进一步加深巩固之前所学知识点。所以，本文介绍主要分为两个部分：
 
 + Glide生命周期管理原理
 + 仿Glide自定义生命周期管理框架实践
@@ -21,7 +21,7 @@
 #### 总体实现原理
 基于当前Activity添加无UI的Fragment，通过Fragment接收Activity传递的生命周期。Fragment和RequestManager基于Lifecycle建立联系，并传递生命周期事件，实现生命周期感知。分析上述的原理，可以归纳为两个方面：
 
-1. 如何生成基于当前传入Activity无UI的Fragment，即如何实现对页面的周期绑定。
+1. 如何基于当前传入Activity生成无UI的Fragment，即如何实现对页面的周期绑定。
 2. 无UI的fragment如何将生命周期传递给RequestManager，即如何实现生命周期传递。
 
 #### 如何绑定生命周期
@@ -136,34 +136,281 @@ RequestManager(Context context, final Lifecycle lifecycle, RequestManagerTreeNod
 建立了联系，下面我们看下生命周期是如何传递的。
 
 #### 如何传递生命周期
-无UI的fragment如何将生命周期传递给RequestManager
 
-- 定义lifecyclelistener接口，内部主要定义了一些生命周期回调方法
-- requestmanager实现lifecyclelistener接口
-- 新建当前activity的requestmanager对象，构造函数传入参数中有一个ActivityFragmentLifecycle对象引用，其内部有一个lifecycleListeners的set集合，存储lifecyclelistener的子类对象引用。
-- 在requestmanager构造函数中，将当前的requestmanager对象存入ActivityFragmentLifecycle 中的lifecycleListeners集合。此时在fragment中已经可以通过ActivityFragmentLifecycle操作requestmanager了
-- 在fragment的生命周期回调方法中，回调ActivityFragmentLifecycle中每个lifecyclelistener的对应生命周期回调方法，从而回调到requestmanager中的生命周期方法。
-- 最后，在requestmanager的生命周期回调方法中，可以对图片相关请求进行相应的处理了。
+通过上面生命周期绑定的流程，我们已经知道通过ActivityFragmentLifecycle，将空白Fragment和RequestManager建立了联系。因为空白fragment注册在页面上，其可以感知页面的生命周期。下面我们来看下如何从空白fragment，将生命周期传递给RequestManager，从而对Request进行管理。
+
+首先，我们来看空白RequestManagerFragment生命周期回调方法：
+
+```
+...
+@Override
+public void onStart() {
+    super.onStart();
+    lifecycle.onStart();
+}
+
+@Override
+public void onStop() {
+    super.onStop();
+    lifecycle.onStop();
+}
+
+@Override
+public void onDestroy() {
+    super.onDestroy();
+    lifecycle.onDestroy();
+}
+...
+
+```
+
+我们看到会调用其成员对象lifecycle相关对应生命周期的回调方法，这里我们以onStart()为例，看一下ActivityFragmentLifecycle中的方法实现：
+
+```
+void onStart() {
+    isStarted = true;
+    for (LifecycleListener lifecycleListener : Util.getSnapshot(lifecycleListeners)) {
+        lifecycleListener.onStart();
+    }
+}
+```
+
+可见回调lifeCycleListener中的相关方法，因为RequestManager实现了lifeCycleListener接口。且在绑定阶段，在RequestManager的构造方法中，将RequestManager加入到了lifeCycle中。故回调lifeCycleListener中的相关方法，可以调用到它里面的对request生命周期进行管理的方法。由此，实现了Request对生命周期的感知。
+
+```
+ /**
+ * Lifecycle callback that registers for connectivity events (if the android.permission.ACCESS_NETWORK_STATE
+ * permission is present) and restarts failed or paused requests.
+ */
+@Override
+public void onStart() {
+    // onStart might not be called because this object may be created after the fragment/activity's onStart method.
+    resumeRequests();
+}
+
+/**
+ * Lifecycle callback that unregisters for connectivity events (if the android.permission.ACCESS_NETWORK_STATE
+ * permission is present) and pauses in progress loads.
+ */
+@Override
+public void onStop() {
+    pauseRequests();
+}
+
+/**
+ * Lifecycle callback that cancels all in progress requests and clears and recycles resources for all completed
+ * requests.
+ */
+@Override
+public void onDestroy() {
+    requestTracker.clearRequests();
+}
+```
+
+基于生命周期传递的过程，画了下生命周期传递的示意图，如下所示：
 
 ![Glide中生命周期传递](http://on-img.com/chart_image/5b55438ce4b053a09c10a29d.png)
 
 
-### 几个关键类和关系
+### 几个核心类介绍
 
-#### 关键类
-+ 对外调用的类：Glide 
-+ 一个处理中间类：RequestManagerRetriever
-+ 生命周期感知的fragment：RequestManagerFragment
-+ 具体处理图片请求的管理类：RequestManager
-+ 定义生命周期回调方法的接口：LifecycleListener
-+ 保存fm和requestmanager映射关系的类：ActivityFragmentLifecycle
+通过对Glide生命周期绑定和传递整个流程过了一遍之后，大家应该对整体实现的框架有一定的了解。现在再来看下面一些核心类的介绍，应该更加有感触。
 
-#### 关键关系
-+ RequestManager实现LifecycleListener，实现其生命周期相关接口，具体处理图片相关网络请求
-+  ActivityFragmentLifecycle作为RequestManagerFragment和RequestManager的成员，在RequestManagerFragment中初始化，通过RequestManager构造函数传入RequestManager内部，由ActivityFragmentLifecycle内部的set集合去持有当前RequestManager对象引用
-+  activity生命周期可以在RequestManagerFragment中感知，通过在RequestManagerFragment的生命周期回调方法中，调用ActivityFragmentLifecycle对象的方法，最终便利调用set集合中对象的生命周期对应方法，实现生命周期感知的处理。
++ Glide：库提供对外调用方法的类，传入页面引用。
++ RequestManagerRetriever：一个处理中间类，获取RequestManager和RequestManagerFragment，并将两者绑定
++ RequestManagerFragment：无UI的fragment，与RequestManager绑定，感知并传递页面的生命周期
++ RequestManager：实现了LifeCycleListener，主要作用为结合Activity或Fragment生命周期，对Request进行管理，如pauseRequests(), resumeRequests(), clearRequests()。
++ LifecycleListener：接口，定义生命周期管理方法，onStart(), onStop(), onDestroy(). RequestManager实现了它。
++ ActivityFragmentLifecycle：保存fragment和Requestmanager映射关系的类，管理LifecycleListener， 空白Fragment会回调它的onStart(), onStop(), onDestroy()。
+
 
 ### 生命周期管理框架实践
+理解了Glide的生命周期管理框架的实现原理，下面我们来自己实现一个简单的绑定页面Activity的生命周期管理框架。
+
++ 定义对外调用类LifecycleDetector，单例模式获取类实例。
+
+```
+public class LifecycleDetector {
+
+    static final String FRAGMENT_TAG = "com.bumptech.glide.manager";
+
+    private static volatile LifecycleDetector sInstance;
+
+    public static LifecycleDetector getInstance() {
+        if (sInstance == null) {
+            synchronized (LifecycleDetector.class) {
+                if (sInstance == null) {
+                    sInstance = new LifecycleDetector();
+                }
+            }
+        }
+
+        return sInstance;
+    }
+
+    public void observer(Activity activity, LifecycleListener lifecycleListener) {
+        // 获取当前activity的FragmentManager
+        android.app.FragmentManager fm = activity.getFragmentManager();
+        // 注册无UI的fragment
+        LifecycleManagerFragment current = getRequestManagerFragment(fm);
+
+        current.getLifecycle().addListener(lifecycleListener);
+    }
+
+
+    @TargetApi(Build.VERSION_CODES.JELLY_BEAN_MR1)
+    LifecycleManagerFragment getRequestManagerFragment(final android.app.FragmentManager fm) {
+        LifecycleManagerFragment current = (LifecycleManagerFragment) fm.findFragmentByTag(FRAGMENT_TAG);
+        if (current == null) {
+            if (current == null) {
+                current = new LifecycleManagerFragment();
+                fm.beginTransaction().add(current, FRAGMENT_TAG).commitAllowingStateLoss();
+            }
+        }
+        return current;
+    }
+}
+```
+
++ 定义接口Lifecycle和其实现类ActivityFragmentLifecycle
+
+```
+// 接口
+public interface Lifecycle {
+    void addListener(LifecycleListener listener);
+}
+
+// 实现类，保存fragment和Requestmanager映射关系的类，管理LifecycleListener
+public class ActivityFragmentLifecycle implements Lifecycle {
+    private final Set<LifecycleListener> lifecycleListeners =
+            Collections.newSetFromMap(new WeakHashMap<LifecycleListener, Boolean>());
+    private boolean isStarted;
+    private boolean isDestroyed;
+
+
+    @Override
+    public void addListener(LifecycleListener listener) {
+        lifecycleListeners.add(listener);
+
+        if (isDestroyed) {
+            listener.onDestroy();
+        } else if (isStarted) {
+            listener.onStart();
+        } else {
+            listener.onStop();
+        }
+    }
+
+    void onStart() {
+        isStarted = true;
+        for (LifecycleListener lifecycleListener : Util.getSnapshot(lifecycleListeners)) {
+            lifecycleListener.onStart();
+        }
+    }
+
+    void onStop() {
+        isStarted = false;
+        for (LifecycleListener lifecycleListener : Util.getSnapshot(lifecycleListeners)) {
+            lifecycleListener.onStop();
+        }
+    }
+
+    void onDestroy() {
+        isDestroyed = true;
+        for (LifecycleListener lifecycleListener : Util.getSnapshot(lifecycleListeners)) {
+            lifecycleListener.onDestroy();
+        }
+    }
+}
+```
+
++ 定义空白Fragment（LifecycleManagerFragment）
+
+```
+public class LifecycleManagerFragment extends Fragment {
+
+    private final ActivityFragmentLifecycle lifecycle;
+
+
+    public LifecycleManagerFragment() {
+        this(new ActivityFragmentLifecycle());
+    }
+
+    // For testing only.
+    @SuppressLint("ValidFragment")
+    LifecycleManagerFragment(ActivityFragmentLifecycle lifecycle) {
+        this.lifecycle = lifecycle;
+    }
+
+    public ActivityFragmentLifecycle getLifecycle() {
+        return lifecycle;
+    }
+
+    @Override
+    public void onStart() {
+        super.onStart();
+        lifecycle.onStart();
+    }
+
+    @Override
+    public void onStop() {
+        super.onStop();
+        lifecycle.onStop();
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        lifecycle.onDestroy();
+    }
+
+}
+```
+
++ 定义LifecycleListener
+
+```
+public interface LifecycleListener {
+
+    /**
+     * Callback for when {@link android.app.Fragment#onStart()}} or {@link android.app.Activity#onStart()} is called.
+     */
+    void onStart();
+
+    /**
+     * Callback for when {@link android.app.Fragment#onStop()}} or {@link android.app.Activity#onStop()}} is called.
+     */
+    void onStop();
+
+    /**
+     * Callback for when {@link android.app.Fragment#onDestroy()}} or {@link android.app.Activity#onDestroy()} is
+     * called.
+     */
+    void onDestroy();
+}
+```
+
+当以上框架所需的类定义好了之后，我们定义一个Test类实现LifecycleListener接口。然后在Activity页面中，比如onCreate方法中实现如下代码：
+
+```
+@Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        Test test = new Test();
+        LifecycleDetector.getInstance().observer(this, test);
+    }
+```
+
+之后，我们就可以在Test监听Activity页面的生命周期变化了。具体框架的一个类图如下所示：
+
+![仿Glide生命周期框架](https://note.youdao.com/yws/public/resource/d77305433fb473583ca3af3cbe7f4b27/xmlnote/WEBRESOURCEe01870110ea7680f7440eb95901cfd3e/15447)
+
+具体工程代码可以从这里获取：[CustomGlideLifecycleDemo](https://github.com/yushiwo/CustomGlideLifecycleDemo)
+
+### 结束
+至此，关于Glide如何绑定页面生命周期的原理讲解结束。在下一篇文章，将会介绍绑定页面生命周期的另一种方式，即基于Android Architecture Components框架的Lifecycle实现生命周期绑定，敬请期待。
 
 ### 参考
 1. [Glide源码分析3 -- 绑定Activity生命周期](https://blog.csdn.net/u013510838/article/details/52143097)
